@@ -3,9 +3,9 @@ level: L1
 view: version-scope
 module: platform
 status: active
-updated: 2026-07-13
+updated: 2026-07-17
 authority: "current version facts across agent-runtime and agent-bus"
-covers: [标准化Agent服务入口, 异构Agent框架兼容, 智能体任务状态缓存, 智能体中间件请求代理, 远程Agent编排, RESTful Client Facade, 客户端调用路由转发, 客户端调用总线转发, 客户端调用事件转发, A2A调用事件转发, Agent Card注册与发现, 运行时实例路由查询, 订阅消费总线事件消息, 轨迹可观测性]
+covers: [标准化Agent服务入口, 异构Agent框架兼容, 智能体任务状态缓存, 智能体中间件请求代理, 远程Agent编排, RESTful Client Facade, 客户端调用路由转发, 客户端调用总线转发, 客户端调用事件转发, A2A调用事件转发, Agent Card注册与发现, 运行时实例路由查询, 订阅消费总线事件消息, 智能体生成并行下游任务, 轨迹可观测性]
 ---
 
 # version-scope
@@ -44,7 +44,7 @@ covers: [标准化Agent服务入口, 异构Agent框架兼容, 智能体任务状
 | FEAT-001 | agent-runtime | active | 标准化 Agent 服务入口 | runtime 作为标准 Agent 服务端，对普通 client、其他 runtime、agent-bus forwarding 暴露同一 A2A Agent Card、JSON-RPC、SSE、Task、错误和租户上下文入口，并支持受信任 runtime-to-runtime webhook 异步完成回调。 | [FEAT-001-standardized-agent-service-entrypoint.md](./FEAT-001-standardized-agent-service-entrypoint.md) | `architecture/L2-Low-Level-Design/agent-runtime/Feat-Func-001-standardized-agent-service-entrypoint.md` |
 | FEAT-002 | agent-runtime | active | 异构 Agent 框架兼容 | 通过统一 Adapter / Handler / SPI 抽象接入异构 Agent 框架；adapter 只桥接请求、调用和结果，不治理框架私有状态。 | [FEAT-002-heterogeneous-agent-framework-compatibility.md](./FEAT-002-heterogeneous-agent-framework-compatibility.md) | `architecture/L2-Low-Level-Design/agent-runtime/Feat-Func-002-heterogeneous-agent-framework-compatibility.md` |
 | FEAT-003 | agent-runtime | active | 智能体任务状态缓存 | 新增标准化 Redis 缓存 SPI，运行时与开发框架复用 Redis 连接池，支持缓存 A2A Task 与 Agent checkpoint。 | [FEAT-003-agent-task-state-cache.md](./FEAT-003-agent-task-state-cache.md) | `architecture/L2-Low-Level-Design/agent-runtime/Feat-Func-003-agent-task-state-cache.md` |
-| FEAT-004 | agent-runtime | active | 远程 Agent 编排 | runtime 作为 A2A 客户端接入远程 Agent，基于 Agent Card 生成本地工具，并支持远程调用、中断续接、进度投射和取消传播。 | [FEAT-004-remote-agent-orchestration.md](./FEAT-004-remote-agent-orchestration.md) | `architecture/L2-Low-Level-Design/agent-runtime/Feat-Func-004-remote-agent-orchestration.md` |
+| FEAT-004 | agent-runtime | active | 远程 Agent 编排 | runtime 作为 A2A 客户端接入远程 Agent，基于 Agent Card 生成本地工具；除单任务调用外，新增任务驱动的有界并行 child Task、fan-out / fan-in、结构化汇聚、定向续接和取消传播范围。 | [FEAT-004-remote-agent-orchestration.md](./FEAT-004-remote-agent-orchestration.md) | [Feat-Func-004-remote-agent-orchestration.md](../architecture/L2-Low-Level-Design/agent-runtime/Feat-Func-004-remote-agent-orchestration.md)（需按新增并行范围更新） |
 | FEAT-005 | agent-runtime | active | 智能体中间件请求代理 | runtime 在部署或启动阶段通过 Skill Hub SPI 代理访问 Skill Hub，使用 runtime 凭据下载 Agent 声明的 skill 包，并把注册材料移交给 agent-core 或框架适配入口。 | [FEAT-005-agent-middleware-request-proxy.md](./FEAT-005-agent-middleware-request-proxy.md) | 待补充 |
 | FEAT-006 | agent-runtime | proposed | RESTful Client Facade | 面向普通业务 client 提供 REST 风格兼容入口，内部归一到 FEAT-001 的标准 Agent 服务入口语义，不作为 runtime-to-runtime、agent-bus 或事件总线协议。 | [FEAT-006-restful-client-facade.md](./FEAT-006-restful-client-facade.md) | 待补充 |
 | FEAT-011 | agent-bus | active | 客户端调用路由转发 | agent-gateway 按目标 agentId / route 语义把客户端调用转发到目标 runtime，同时保持 runtime Task owner 和 A2A 表面不变。 | [FEAT-011-client-invocation-route-forwarding.md](./FEAT-011-client-invocation-route-forwarding.md) | 待补充 |
@@ -54,14 +54,16 @@ covers: [标准化Agent服务入口, 异构Agent框架兼容, 智能体任务状
 | FEAT-015 / Feat-Func-015 | agent-bus/r-and-d-center | draft | Agent Card 注册与发现 | registry-discovery-center 承载 Agent Card 注册、发现、可见性、版本和能力目录事实，为 gateway、runtime 和平台集成提供发现基础。 | [FEAT-015-agent-card-registration-and-discovery.md](./FEAT-015-agent-card-registration-and-discovery.md) | `architecture/L2-Low-Level-Design/agent-bus/registry-discovery-runtime-design.cn.md` |
 | FEAT-016 | agent-bus | draft | 运行时实例路由查询 | registry-discovery-center 支持已知目标的运行时实例路由查询，向 gateway 或 runtime 提供不暴露物理 endpoint 的路由引用和可用性投影。 | [FEAT-016-runtime-instance-route-query.md](./FEAT-016-runtime-instance-route-query.md) | 待补充 |
 | FEAT-017 | agent-runtime | draft | 订阅消费总线事件消息 | runtime 内嵌订阅并消费客户端调用事件和服务间 A2A 请求事件，复用标准 A2A Task 控制面并发布接受、响应、等待输入、流准备和终态投影。 | [FEAT-017-bus-event-subscription-consumption.md](./FEAT-017-bus-event-subscription-consumption.md) | 待补充 |
+| FEAT-019 | agent-runtime | draft | 智能体生成并行下游任务 | DeepAgent 在一次决策中生成多个独立工具子任务，以多个 Tool Call 有界并行调用 openJiuwen 支持的本地函数、REST、MCP及内置工具，all-settled 后按 `tool_call_id` 汇聚并单次继续推理；不含下游 Agent。 | [FEAT-019-parallel-downstream-tool-tasks.md](./FEAT-019-parallel-downstream-tool-tasks.md) | 待补充 |
 
 ## 4. 阅读顺序
 
 1. 先阅读本入口，确认当前版本事实范围和文档关系。
 2. 如果关注 runtime 对外服务入口，先读 `FEAT-001`，再读 `FEAT-002`、`FEAT-003`、`FEAT-004`、`FEAT-005`、`FEAT-006`、`FEAT-017` 和 `DFX-001`。
-3. 如果关注 agent-bus 调用转发链路，按 `FEAT-011`、`FEAT-012`、`FEAT-013`、`FEAT-014`、`FEAT-017` 的顺序阅读。
-4. 如果关注注册发现和路由，阅读 `FEAT-015` 与 `FEAT-016`，再回到调用转发特性确认 route handle、Agent Card 和 Task owner 边界。
-5. 进入 `architecture/L1-High-Level-Design/` 和 `architecture/L2-Low-Level-Design/` 阅读对应架构和详细设计，确认内部设计如何满足这些事实要求。
+3. 如果关注 DeepAgent 在单轮中生成多个工具子任务并并行调用下游工具，阅读 `FEAT-019`；如果关注远程 Agent / A2A Task 并行，阅读 `FEAT-004`。两者不得因 Agent 被包装成 Tool 而混用。
+4. 如果关注 agent-bus 调用转发链路，按 `FEAT-011`、`FEAT-012`、`FEAT-013`、`FEAT-014`、`FEAT-017` 的顺序阅读。
+5. 如果关注注册发现和路由，阅读 `FEAT-015` 与 `FEAT-016`，再回到调用转发特性确认 route handle、Agent Card 和 Task owner 边界。
+6. 进入 `architecture/L1-High-Level-Design/` 和 `architecture/L2-Low-Level-Design/` 阅读对应架构和详细设计，确认内部设计如何满足这些事实要求。
 
 ## 5. 维护规则
 
