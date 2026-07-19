@@ -1,134 +1,160 @@
 ---
-version: 0715
+version: 0719
 module: agent-runtime
 feature_type: functional
-feature_id: FEAT-2026-009
+feature_id: FEAT-009
 status: active
+updated: 2026-07-19
+authority:
+  - README.md
+  - FEAT-001-standardized-agent-service-entrypoint.md
+  - FEAT-006-standard-agent-client-invocation.md
+  - FEAT-007-local-tool-registration-and-execution.md
+  - FEAT-008-user-interaction-interrupt-response.md
+  - FEAT-010-task-level-dynamic-tool-visibility-and-handoff.md
 ---
-# Agent-runtime 组件调用端侧工具响应特性文档
+
+# 运行时通过响应调用客户端本地工具 - 当前版本事实要求
 
 ## 1. 特性定位
 
-FEAT-2026-009 定义 `agent-runtime` 当前版    本支持“带有端侧工具的智能体请求”的服务端响应事实：当 Agent 执行过程中需要调用客户端侧工具、页面能力、终端插件或人工确认时，runtime 必须把该需求作为 A2A Task 的可观察中断状态返回给客户端，并在客户端主动提交结果后恢复原 Task。
+FEAT-009 定义 `agent-runtime` 当前版本在服务端 Agent 执行过程中处理客户端本地工具调用的外部行为事实：当客户端发起的标准 invocation 携带了当前可见的本地工具视图，且 Agent 执行过程中产生客户端本地工具调用时，runtime 必须挂起当前服务端 Task，并通过本次智能体服务调用响应把客户端工具请求投影返回给 client；client 完成本地工具执行后，再按标准 continuation invocation 提交工具结果，runtime 校验恢复关系后继续原 Task。
 
-本特性解决的问题是：业务应用通过 `agent-client` 发起一次智能体服务调用后，服务端 Agent 可能在执行中需要客户端本地能力参与。
+本特性解决的问题是：客户端本地工具只能在客户端本地执行，runtime 不能直接访问客户端页面、插件、文件、本地端口或业务 UI；同时 Agent 执行不能在等待客户端工具时被伪装成 completed。runtime 必须把“需要客户端执行本地工具”表达为标准 Task 生命周期中的可恢复等待状态，并在客户端后续提交工具结果后恢复同一个服务端 Task。
 
-例如读取当前页面上下文、触发终端插件、要求用户确认某个高风险动作。runtime 不能直接访问客户端资源，也不能把等待客户端工具的状态伪装成已完成。runtime 必须通过 A2A 响应、SSE 事件、Task 查询投影或受治理 Gateway / Event Bus 投影告诉客户端“当前 Task 需要端侧工具结果”，由客户端执行后再把结果提交回 runtime。
+本特性处于以下特性之间的 runtime 边界：
 
-在总体架构中，本特性位于 `agent-runtime` 的 A2A 服务入口、Agent 执行过程和 `agent-client` 本地能力执行之间。
+- FEAT-006 定义业务应用通过 `agent-client` 创建 invocation、观察状态、取消和以新的 continuation invocation 继续等待输入；业务应用不直接操作服务端 `taskId`。
+- FEAT-007 定义客户端本地工具注册、ToolExposurePolicy、ToolView、本地执行、授权审批、结构化 outcome 和结果提交 facade。
+- FEAT-008 定义通用用户交互式中断响应。纯粹的用户补充输入、决策或材料等待归 FEAT-008；客户端 Action 工具执行前的本地授权、确认、审批归 FEAT-007，其最终 outcome 可作为 FEAT-009 的客户端工具结果进入 runtime。
+- FEAT-010 定义 agent-core 如何基于任务级 ToolView 形成 Agent 可见工具集合，以及 Agent 选择客户端工具后的调用移交语义。
+- FEAT-001 定义 A2A Task、Message、SSE、查询、取消、错误和状态表面。
 
-runtime 是服务端 Task owner，负责把端侧工具需求投影为 Task 中断、接收客户端结果、校验结果并恢复 Task；
-
-`agent-core` 负责在 Agent 执行中识别或产生端侧工具调用移交意图，具体由 FEAT-2026-010 承接；
-
-`agent-client` 负责本地能力声明、执行和结果提交，具体由 FEAT-2026-007 承接；Gateway / Event Bus 只负责受治理转发和投影交付，不拥有 Task 状态。
-
-本特性面向以下角色：
-
-- 业务应用开发者：理解一次智能体调用可能返回“需要客户端工具结果”的中断状态，并在客户端完成工具执行后继续任务。
-- Runtime 模块开发者：实现端侧工具请求的 A2A Task 响应、结果接收、校验和 Task 恢复语义。
-- agent-core 集成方：把 Agent 执行中的端侧工具调用移交给 runtime，而不是直接执行客户端工具。
-- Gateway / IngressGateway 开发者：透传端侧工具请求和客户端结果，不改变 Task owner。
-- agent-client 集成方：消费端侧工具请求，执行本地能力并主动提交结果。
-- 测试与验收团队：验证 Client、Gateway、runtime 基于 A2A 协议形成端侧工具调用闭环。
-
-本特性只定义 runtime 侧“端侧工具请求响应与结果恢复”的外部行为。客户端本地工具注册和执行由 FEAT-2026-007 定义；agent-core 任务粒度动态工具可见性和调用移交由 FEAT-2026-010 定义；Gateway 路由和总线投影由 FEAT-011、FEAT-012、FEAT-013 和 FEAT-017 定义；runtime 标准 A2A 服务入口由 FEAT-001 定义。
+FEAT-009 自身只定义 runtime 对客户端本地工具请求的 Task 级挂起、响应投影、结果接收和 Task 恢复语义。它不定义客户端工具注册和真实执行，不定义 core 的动态工具可见性算法，不新增 runtime 专用客户端工具 endpoint，也不定义 Gateway、Event Bus 或 agent-bus 的投影协议。
 
 ## 2. 当前版本能力要求
 
-| 能力             | 要求级别 | 事实要求                                                                                                       |
-| ---------------- | -------- | -------------------------------------------------------------------------------------------------------------- |
-| 端侧工具请求响应 | MUST     | runtime 必须能在 Agent 执行需要客户端侧工具时，向 client 返回 A2A Task 可观察的等待状态或等价响应。            |
-| A2A 中断语义     | MUST     | 等待客户端工具结果时，Task 不得被标记为 completed；必须表现为等待输入、等待能力结果或等价可恢复状态。          |
-| Client 可见投影  | MUST     | 端侧工具请求必须能通过阻塞响应、SSE、Task 查询或 Gateway / Event Bus 投影被 client 观察到。                    |
-| 结果提交入口     | MUST     | client 执行本地工具后，必须能通过受治理 C/S 通道（A2A）把结果、拒绝或错误提交回 runtime。                      |
-| Task 恢复        | MUST     | runtime 接收并校验客户端结果后，必须恢复原 Task，并由 Agent 执行逻辑决定继续、完成、失败或再次等待。           |
-| 客户端资源边界   | MUST     | runtime 不直接访问客户端 DOM、插件、文件、本地端口或业务 UI。                                                  |
-| Core 边界        | MUST     | runtime 接收 core 产生的端侧工具调用移交意图，但不在本特性中定义 core 的动态工具目录、策略裁剪或模型工具注入。 |
+| 能力 | 要求级别 | 事实要求 |
+|---|---|---|
+| ToolView 承接与 Task 级绑定 | MUST | runtime 必须能从标准 client invocation 中接收当前 ToolView 或等价客户端能力视图，并把它绑定到当前服务端 Task 的执行上下文，使下游 Agent 执行链路能够在任务范围内感知这些客户端能力。具体工具可见性计算、提示注入、模型工具 schema 组装和调用移交由 FEAT-010 定义。 |
+| 客户端工具调用挂起 | MUST | Agent 执行过程中产生客户端本地工具调用时，runtime 必须挂起当前服务端 Task，使其进入等待客户端工具结果的可恢复中断状态。 |
+| 本次调用响应投影 | MUST | runtime 必须通过收到的智能体服务调用响应，把客户端工具请求投影返回给 client。流式与非流式调用都不得继续占用请求等待客户端工具实际执行完成。 |
+| 非完成状态 | MUST | 等待客户端本地工具结果时，Task 不得被标记为 completed，也不得把工具请求投影伪装成 Agent 最终答案。 |
+| continuation 结果接收 | MUST | client 完成本地工具执行、拒绝、超时或失败后，必须按 FEAT-006 的 continuation invocation 语义提交结果；runtime 必须把合法 continuation 映射回原挂起 Task。 |
+| Task 恢复 | MUST | runtime 校验 continuation 与当前挂起 Task 的关联后，必须把客户端工具 outcome 作为恢复输入交回执行链路，由 Agent/core 决定继续、完成、失败、再次请求客户端工具或进入其他等待状态。 |
+| 客户端异常 outcome 透传 | MUST | 工具未声明、未暴露、权限不足、参数非法、用户拒绝、工具不可用、执行失败或超时等客户端 outcome 应作为工具结果输入恢复执行链路；runtime 不应仅因 outcome 表示工具失败就直接把 Task 置为 FAILED。 |
+| runtime 恢复校验 | MUST | runtime 必须校验 continuation 的租户、调用上下文、Task 状态、恢复点和幂等语义；跨租户、错 invocation、Task 已终态、等待点不存在、重复或不可恢复等 runtime 层非法请求必须被拒绝或映射为标准错误。 |
+| 等待期间查询观察 | MUST | 如果 Task 在等待客户端本地工具结果期间被查询，查询结果必须显示为中断挂起或等待输入类状态，不得显示为 completed。 |
+| 等待期间取消 | MUST | 等待客户端本地工具结果期间，Task 必须允许按 FEAT-001 / FEAT-006 取消；取消后迟到的客户端工具结果不得恢复该 Task。 |
+| 客户端资源边界 | MUST | runtime 不直接访问客户端本地工具、DOM、插件、文件、本地端口、凭证或业务 UI，也不远程驱动客户端内部审批流程。 |
+| Gateway / Event Bus 主权边界 | MUST | Gateway、IngressGateway、Event Bus 或 agent-bus 可以承载请求、响应或投影交付，但不拥有客户端工具请求、客户端工具结果或 Task 权威状态。 |
+| 新 endpoint | OUT | 当前版本不新增 runtime 专用客户端工具 endpoint；调用创建、继续、查询和取消必须复用 FEAT-006 / FEAT-001 定义的标准入口语义。 |
+| 纯用户交互中断 | OUT | 纯粹需要用户补充输入、选择、决策或材料的等待由 FEAT-008 承接，不作为 FEAT-009 的客户端本地工具调用事实。 |
 
 ## 3. 外部接口与入口要求
 
-| 入口                     | 类型                         | 事实要求                                                                                                 |
-| ------------------------ | ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| A2A 调用响应             | runtime -> Gateway / client  | 当执行需要端侧工具结果时，响应必须表达 Task 正在等待客户端侧工具输入，不得伪装成完成结果。               |
-| A2A SSE / Task 投影      | runtime -> Gateway / client  | 流式调用或异步任务必须能把端侧工具请求投影给 client，包含工具请求说明、所需输入和结果提交关联信息。      |
-| Task 查询                | client -> Gateway -> runtime | client 查询 Task 时，必须能看到当前 Task 是否正在等待端侧工具结果。当前runtime只支持根据TaskID进行查询。 |
-| 客户端结果提交           | client -> Gateway -> runtime | client 完成本地工具执行后，必须能提交成功结果、用户拒绝或执行错误，runtime 负责Task恢复与 执行。         |
-| Gateway / Event Bus 转发 | 受治理交付路径               | Gateway / Event Bus 只负责请求、投影和结果的交付，不解释客户端工具业务含义，不改变 Task owner。          |
+FEAT-009 不定义新的 HTTP endpoint、A2A method、Java SPI、wire 字段名或内部 DTO。下游设计可以细化具体字段结构和实现类型，但不得改变以下外部接口事实。
+
+| 接口面 | 来源 / 去向 | FEAT-009 使用语义 |
+|---|---|---|
+| 创建 invocation | FEAT-006 / FEAT-007 -> runtime | client 发起标准 Agent 调用时可携带当前 ToolView。runtime 接收后把 ToolView 绑定到当前 Task 执行上下文。 |
+| 客户端工具请求投影 | runtime -> client | Agent 执行中产生客户端本地工具调用时，runtime 通过本次调用响应返回等待客户端工具结果的投影。投影可以被 client 用来执行 FEAT-007 的本地校验、授权、审批和工具执行。 |
+| 流式响应 | FEAT-001 / FEAT-006 | 流式调用中出现客户端工具请求时，runtime 必须通过当前响应流投影等待状态，并按标准中断/等待语义收束本次发送流。 |
+| 非流式响应 | FEAT-001 / FEAT-006 | 非流式调用中出现客户端工具请求时，runtime 必须返回可恢复的等待状态投影，而不是无限等待客户端本地工具执行完成。 |
+| continuation invocation | FEAT-006 / FEAT-007 -> runtime | client 提交客户端工具 outcome 时，应以新的 continuation invocation 关联旧 invocation 的等待状态。runtime 内部映射回原挂起 Task。 |
+| Task 查询 | FEAT-001 / FEAT-006 | 等待客户端工具结果期间，查询只能观察到 Task 处于等待/中断状态及必要恢复投影摘要，不能观察到 completed。 |
+| Task 取消 | FEAT-001 / FEAT-006 | 等待期间取消使当前等待点失效；后续迟到工具结果不得推进 Task。 |
+
+客户端工具请求投影的具体字段由 FEAT-001、FEAT-006、FEAT-007、FEAT-010 和 L2 设计共同约束。黑盒事实层只要求该投影足以让 client 尝试按 FEAT-007 校验和执行：如果工具不存在、未暴露、越权、参数非法或模型幻觉导致无法执行，client 可以在 continuation invocation 中提交结构化异常 outcome。
 
 ## 4. 场景与用户旅程
 
-| 场景                          | 前置条件                                                                 | 用户/系统动作                                                     | 期望行为                                                                                                                                                                                                                                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 端侧工具请求随调用返回        | 业务应用通过 agent-client 发起智能体调用，Agent 执行中需要客户端本地能力 | runtime 从 Agent 执行过程中收到端侧工具调用移交意图               | runtime 不完成 Task，而是通过 A2A 响应或 SSE 投影返回“等待端侧工具结果”；<br />Gateway 透传该状态；client 展示或调度对应本地能力。                                                                                                                                                                         |
-| 客户端执行本地工具并恢复 Task | client 已收到端侧工具请求，且本地能力可用                                | client 执行页面能力、终端插件或人工确认，并把结果提交给 Gateway   | Gateway 将结果转发到 runtime；runtime 校验该结果属于当前 Task 后恢复 Agent 执行；Task 可继续运行、完成、失败或再次请求端侧工具。                                                                                                                                                                             |
-| 用户拒绝或本地工具失败        | 本地工具需要用户确认，或客户端执行失败                                   | client 提交用户拒绝、权限不足、能力不可用或执行失败（工具侧触发） | 地方runtime 将该结果作为客户端侧响应处理，不直接伪造成功；<br />Agent 按照真实的后端模型处理返回结果；                                                                                                                                                                                                       |
-| 流式调用中的端侧工具中断      | client 使用流式观察，Agent 执行中需要端侧工具                            | runtime 通过 SSE / Task 投影发出等待端侧工具结果状态              | Gateway 只桥接或投影状态，不承载客户端工具执行；<br />client 按请求执行本地能力并提交结果后，runtime 继续原 Task 的流式执行或返回终态。**特别说明：**<br />工具调用失败后，因三方工具调用产生的问题，由Client将错误信息+taskID返回给runtime进行处理。完全遵守Agent业务逻辑，如更换工具或者结束流程等。 |
-
-### 4.1 端到端闭环说明
-
-1. Client 通过 `agent-client` 发起 A2A 兼容调用，请求经 Gateway 进入 runtime。
-2. runtime 调用 Agent 执行；当 Agent 需要端侧工具时，core 或框架适配层只产生调用移交意图，不执行客户端工具。
-3. runtime 将该意图转化为 Task 可观察的等待状态，通过 A2A 响应、SSE、Task 查询投影或总线投影返回给 Gateway / client。
-4. client 根据该请求执行本地能力，或由用户确认、拒绝。
-5. client 通过受治理 C/S 通道提交结果；Gateway 只转发结果。
-6. runtime 校验结果与当前 Task 的关联关系，恢复 Agent 执行，并继续产生 Task 状态、SSE 流或终态响应。
+| 场景 | 前置条件 | 用户 / 系统动作 | 期望行为 |
+|---|---|---|---|
+| 带 ToolView 发起调用 | 业务应用已通过 FEAT-007 注册并显式暴露本地工具 | client 按 FEAT-006 创建 invocation，并随调用提交当前 ToolView | runtime 接收 ToolView 并绑定到当前 Task 执行上下文；Agent/core 能在任务范围内感知这些客户端能力。 |
+| 流式调用中请求客户端工具 | client 使用流式 invocation，Agent 执行中选择客户端本地工具 | runtime 观察到执行链路产生客户端本地工具调用 | runtime 挂起当前 Task，通过 SSE / 流式响应投影客户端工具请求并收束本次发送流；Task 保持等待客户端工具结果的非终态。 |
+| 非流式调用中请求客户端工具 | client 使用 blocking invocation，Agent 执行中选择客户端本地工具 | runtime 观察到执行链路产生客户端本地工具调用 | runtime 不继续阻塞等待客户端执行工具，而是通过本次响应返回可恢复的等待状态和客户端工具请求投影。 |
+| 客户端执行工具后恢复 Task | client 已收到客户端工具请求投影 | client 按 FEAT-007 执行本地工具、拒绝、返回错误或超时，并按 FEAT-006 创建 continuation invocation | runtime 校验 continuation 与挂起 Task 的关联，把工具 outcome 作为恢复输入交回执行链路；Agent/core 决定继续、完成、失败、再次请求工具或进入其他等待。 |
+| 幻觉或越权工具调用 | Agent 请求了 ToolView 中不存在、未暴露或越权的客户端工具 | client 校验工具请求投影失败 | client 按 FEAT-007 提交 tool_not_declared、permission_denied、invalid_tool_arguments 或等价 outcome；runtime 将其作为客户端工具结果输入恢复执行链路。 |
+| 等待期间查询 | Task 已挂起等待客户端工具结果 | 业务应用通过 invocation 查询，或平台按标准 Task 查询 | 查询投影显示 Task 处于等待客户端工具结果的中断状态，不显示 completed。 |
+| 等待期间取消和迟到结果 | Task 等待客户端工具结果期间被取消 | client 后续提交已经完成但迟到的工具结果 | runtime 不恢复已取消或终态 Task；迟到结果被拒绝、忽略或映射为明确状态冲突。 |
 
 ## 5. 行为语义与边界
 
-### 5.1 核心行为语义
+### 5.1 ToolView 与任务范围语义
 
-#### 5.1.0 Task 中断语义
+- ToolView 来自 FEAT-007 的本地工具目录和暴露策略，并随 FEAT-006 invocation 进入平台链路。
+- runtime 只把 ToolView 绑定到当前 Task 执行上下文，不把它注册为平台全局工具、服务端工具目录、Skill Hub、MCP 或 agent-middleware 工具。
+- ToolView 的任务级可见性、Agent 工具面构造和调用移交由 FEAT-010 定义；FEAT-009 不定义 core 的内部工具选择算法。
+- 服务端不应缓存客户端长期工具视图；每次真实 invocation 的客户端能力事实以随调用进入的 ToolView 为准。
 
-- 端侧工具请求是 Task 执行过程中的可恢复等待状态，不是完成，也不是普通失败。
-- client 和 Gateway 只能观察和提交结果，不能伪造 runtime 内部状态。
-- 同一 Task 可以在多轮执行中多次等待端侧工具结果，每次都必须能与对应客户端提交结果关联。
+### 5.2 客户端工具请求响应语义
 
-#### 5.1.1 Client / Gateway / runtime 分工
+- 客户端本地工具调用是当前 Task 的可恢复等待点，不是完成态，也不是 Agent 最终答案。
+- runtime 必须通过本次调用响应把客户端工具请求返回给 client；流式和非流式都不得等待客户端本地工具实际执行完成后再继续本次响应。
+- 客户端工具请求投影是让 client 尝试执行本地能力的请求，不保证工具一定存在、可用、授权或参数正确。
+- 如果 Agent/core 因幻觉、误传或越权产生不可执行工具请求，client 应按 FEAT-007 返回结构化异常 outcome。
 
-- Client 负责展示端侧工具请求、执行本地能力、提交结果或拒绝。
-- Gateway 负责认证、路由、协议桥接和投影转发，不拥有 Task 状态。
-- runtime 负责 Task owner 语义、等待状态投影、结果校验、恢复执行和终态决定。
-- core 负责在 Agent 执行中产出端侧工具调用移交意图，不负责 A2A Task 状态和客户端执行。
+### 5.3 continuation 与恢复语义
 
-#### 5.1.2 结果处理语义
+- 客户端工具结果提交遵守 FEAT-006 的 continuation invocation 语义：业务应用 / client 使用新的 invocation 关联旧 invocation 的等待状态。
+- runtime 在服务端语义上恢复原挂起 Task，不创建新的服务端 Task owner。
+- continuation 必须由 runtime 校验租户、调用关联、Task 状态、恢复上下文和幂等语义。
+- 合法 continuation 使 Task 离开等待客户端工具结果状态，并把工具 outcome 交回执行链路。
+- 重复 continuation、错关联 continuation、终态 Task continuation 或恢复上下文缺失必须被拒绝或映射为标准错误，不得隐式创建新 Task。
 
-- 客户端结果是外部输入，runtime 必须校验后才能恢复 Task。
-- 用户拒绝、权限不足、能力不可用和执行失败都必须有清晰的客户端可见状态。
-- runtime 恢复 Task 后，Agent 可以继续执行、再次等待端侧工具、完成或失败。
+### 5.4 客户端工具 outcome 语义
 
-#### 5.1.3 错误、状态与可观测结果
+- `OK`、用户拒绝、权限不足、工具不可用、工具未声明、参数非法、执行失败、超时等 outcome 都是客户端工具结果输入。
+- runtime 不根据 outcome 的业务含义直接决定 Task 成败；Agent/core 可以据此继续、换工具、再次请求客户端工具、失败或完成。
+- runtime 可以基于协议非法、恢复点非法、Task 状态非法、跨租户、重复提交或不可恢复等 runtime 层事实拒绝请求或推进失败。
+- 工具执行结果正文、错误正文、授权引用、审计引用、payloadRef 或最小必要结果的生成和提交由 FEAT-007 约束。
 
-| 场景                 | 事实要求                                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------------------------ |
-| 端侧工具请求生成失败 | runtime 返回明确错误或使 Task 进入 failed。                                                            |
-| 客户端拒绝           | runtime 接收拒绝结果，并由 Agent 执行逻辑决定降级、失败或返回说明。                                    |
-| 客户端工具不可用     | runtime 接收不可用结果，不把该状态伪造成成功。                                                         |
-| Task 已终态          | 后续客户端工具结果不得重新推进该 Task。（A2A默认能力）                                                 |
-| client 连接中断      | Task 状态仍由 runtime 保持；<br />client 可通过 Task 查询或重新观察获取当前状态。<br />（A2A默认能力） |
+### 5.5 查询、取消与迟到结果语义
 
-### 5.2 显式边界与不承诺项
+- 等待客户端工具结果期间，Task 查询必须可观察到等待/中断状态。
+- 等待状态不是 completed，也不是普通 failed；除非 runtime 层发生明确失败。
+- 等待期间可以取消 Task；取消后等待点失效。
+- 取消、失败、完成或其他终态之后到达的客户端工具结果不得恢复 Task。
 
-| 边界                       | 当前版本不承诺                                                   |
-| -------------------------- | ---------------------------------------------------------------- |
-| 客户端真实执行             | runtime 不执行客户端本地工具，不访问 DOM、插件、文件或本地端口。 |
-| core 动态工具目录          | 任务粒度工具目录、模型可见工具和调用移交由 FEAT-2026-010 定义。  |
-| agent-client 本地能力      | 本地能力声明、执行和结果提交 facade 由 FEAT-2026-007 定义。      |
-| Gateway / Event Bus 所有权 | Gateway / Event Bus 不拥有 pending tool call 或 Task 权威状态。  |
+### 5.6 与用户交互中断的边界
+
+- 如果 Agent 只是要求用户补充输入、做自然语言选择、提供材料或回答问题，应按 FEAT-008 的交互式中断处理。
+- 如果 Agent 请求执行客户端本地工具，而该工具作为 Action 需要本地确认或审批，则确认和审批过程属于 FEAT-007 的客户端本地治理；最终 outcome 进入 FEAT-009 的工具结果恢复链路。
+- FEAT-009 不定义审批 UI、表单协议、人工确认流程或 HITL 专用状态机。
+
+### 5.7 错误与可观测语义
+
+| 场景 | 事实要求 |
+|---|---|
+| ToolView 缺失或为空 | Agent/core 不应感知未暴露客户端工具；如仍产生客户端工具请求，client 可返回未声明或不可用 outcome。 |
+| 客户端工具请求投影生成失败 | runtime 应返回标准错误或使 Task 进入可诊断失败表面，不得伪造完成。 |
+| continuation 关联无效 | runtime 拒绝恢复，并返回明确错误或状态冲突。 |
+| Task 已终态 | runtime 不恢复 Task；迟到结果被拒绝、忽略或映射为明确错误。 |
+| 客户端返回工具异常 outcome | runtime 将其作为恢复输入交给执行链路，不直接伪造成 runtime 执行失败。 |
+| 恢复执行失败 | runtime 按标准失败表面处理，并保留可诊断错误。 |
+| 可观测链路 | runtime 应记录 ToolView 进入、客户端工具请求响应、Task 挂起、continuation 接收、校验、恢复、取消、迟到结果和失败等事实，并关联 tenant、conversation、invocation、Task、trace 和耗时。 |
 
 ## 6. 对下游设计与实现的约束
 
-- L2 设计必须把本特性作为 runtime 响应端侧工具请求和恢复 Task 的事实来源，保持 A2A Task、SSE 和 Task 查询语义一致。
-- FEAT-009 与 FEAT-010 的边界必须保持清晰：core 产生端侧工具调用移交意图，runtime 把该意图转化为 A2A 可观察等待状态并处理客户端结果。
-- Gateway / IngressGateway / Event Bus 只能交付端侧工具请求和客户端结果，不得拥有 Task 状态或解释工具业务结果。
-- 测试必须覆盖 Client 发起调用、runtime 返回端侧工具等待、Gateway 透传、client 提交结果、runtime 恢复 Task、用户拒绝、工具不可用和连接中断后的查询恢复。
-- 开发指南不得把端侧工具响应描述为 runtime 直连客户端资源。
-- 任何新增客户端直连能力，都必须先更新本特性或新增 version-scope 特性。
-- 本特性术语必须保持稳定：端侧工具请求、A2A Task、INPUT_REQUIRED、客户端结果、Task 恢复、Gateway 投影、runtime Task owner。
+- L2 设计必须把 FEAT-009 作为 runtime 处理客户端本地工具请求响应和恢复 Task 的事实来源，不得把 runtime 描述为客户端工具执行器。
+- FEAT-009 不新增 runtime 专用客户端工具 endpoint；创建 invocation、continuation、查询和取消必须复用 FEAT-006 / FEAT-001 的入口语义。
+- runtime 必须把 ToolView 作为当前 Task 执行上下文的一部分交给 Agent 执行链路；具体 task 级动态工具可见性和调用移交由 FEAT-010 承接。
+- 下游实现不得把 ToolView 提升为平台全局工具目录，也不得把客户端本地工具注册为 agent-middleware、Skill Hub、MCP 或服务端工具。
+- 工具结果 outcome 的业务含义应交给 Agent/core 处理；runtime 只处理协议、恢复点、Task 状态、幂等和安全边界。
+- 测试必须覆盖带 ToolView 创建调用、流式工具请求响应、非流式工具请求响应、continuation 工具结果恢复、客户端拒绝/越权/未声明/参数非法 outcome、等待期间查询、等待期间取消、迟到结果、重复 continuation 和恢复上下文缺失。
+- 开发指南必须明确区分 FEAT-007 的 client 本地执行、FEAT-008 的纯用户交互中断、FEAT-009 的 runtime 工具请求响应与恢复、FEAT-010 的 core 动态工具可见性。
+- 任何对客户端直连执行、服务端驱动本地审批、专用工具 endpoint、平台全局客户端工具目录、独立工具状态机或独立 HITL 状态机的新增承诺，都必须先更新本特性或新增 version-scope 特性。
 
 ## 7. 关联文档
 
-- `agent-sdk/Docs/Agent-runtime组件调用端侧工具响应特性设计.md`
-- `Docs/FEAT_Design/FEAT-2026-007-agent-client-local-tool-registration-remote-driven-invocation.md`
-- `Docs/FEAT_Design/FEAT-2026-010-agent-core-dynamic-client-side-tool-registration-invocation.md`
-- `Docs/FEAT_Design/FEAT-001-standardized-agent-service-entrypoint.md`
+- `version-scope/FEAT-001-standardized-agent-service-entrypoint.md`
+- `version-scope/FEAT-006-standard-agent-client-invocation.md`
+- `version-scope/FEAT-007-local-tool-registration-and-execution.md`
+- `version-scope/FEAT-008-user-interaction-interrupt-response.md`
+- `version-scope/FEAT-010-task-level-dynamic-tool-visibility-and-handoff.md`
+- `architecture/L1-High-Level-Design/agent-runtime/README.md`
+- `architecture/L1-High-Level-Design/agent-runtime/logical.md`
+- `architecture/L1-High-Level-Design/agent-runtime/scenarios.md`
+- `architecture/L1-High-Level-Design/agent-runtime/api-appendix.md`
+- `architecture/L1-High-Level-Design/agent-runtime/spi-appendix.md`
